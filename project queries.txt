@@ -1,0 +1,485 @@
+--check data types of columns
+
+select column_name,data_type
+from information_schema.columns
+where table_schema = 'public'
+and table_name = 'athletes';
+
+select column_name,data_type
+from information_schema.columns
+where table_schema = 'public'
+and table_name = 'country_stats';
+
+alter table country_stats
+alter column year type date using year::date,
+alter column pop_in_millions type numeric(10,6) using pop_in_millions::numeric(10,6);
+
+
+--summarize country data as a single table
+
+create table country as 
+(
+select country_id as id,
+	   country as name,
+       round(avg(coalesce(gdp,0))) as gdp,
+	   round(avg(coalesce(pop_in_millions,0)),6) as pop_in_million,
+	   sum(nobel_prize_winners) as nobel_prize_winners,
+	   region
+from country_stats join countries 
+on country_stats.country_id = countries.id
+where extract(year from year) >= 2010
+group by country_id,country,region
+order by country_id
+);
+
+--creating a single table for summer and winter games
+create table games as 
+(
+select *,'summer_games' as type
+from summer_games
+
+union all
+
+select *,'winter_games' as type
+from winter_games
+)
+
+--country participating -- 203
+
+select count(distinct name) from country
+
+-- athletes -- 4215
+
+select count(distinct id) from athletes;
+
+-- sport 127 and category 6
+
+select count(distinct sport) as category,
+ count(distinct event) as sports
+ from games;
+ 
+--- medals distributed
+
+select count(gold) as gold,
+count(silver) as silver,
+count(bronze) as bronze,
+sum(gold)+sum(silver)+sum(bronze) as total
+from games;
+
+-- age of athletes 13 55
+
+select min(age),max(age)
+from athletes;
+
+
+select * from games;
+
+--athlete analysis
+--null values
+
+select count(*)-count(id) as id,
+count(*)-count(age) as age,
+count(*)-count(height) as height ,
+count(*)-count(weight) as weight
+from athletes;
+
+--duplicate value in athlete
+	
+select id,count(*) from athletes
+group by id 
+order by count desc;
+
+--checking the value
+select * from athletes where id = 127594;
+
+--dropping the duplicate value
+delete from athletes
+where id = 127594 and age = 30;
+
+--athlete count by region
+
+SELECT initcap(coalesce(c.region,'Other')) as "Region",
+	count(DISTINCT a.id) AS "Number of Athletes"
+FROM athletes a
+INNER JOIN games ON a.id = games.athlete_id
+INNER JOIN country c ON games.country_id = c.id
+GROUP BY region
+ORDER BY "Number of Athletes" DESC;
+
+
+
+
+--gender histogram
+
+SELECT gender as "Gender",
+	count(id) as "Num"
+FROM athletes
+GROUP BY gender;
+
+--medal count by gender
+SELECT gender,
+	count(gold) AS gold,
+	count(silver) AS silver,
+	count(bronze) AS bronze,
+	count(gold) + count(silver) + count(bronze) AS total
+FROM games g
+INNER JOIN athletes a ON g.athlete_id = a.id
+GROUP BY gender;
+
+--medal count by age groups
+
+--create age bins on the basis of min and max age calculated perviously
+create temp table age_bins as
+( select generate_series(10,50,5) as min_age,
+ generate_series(15,55,5) as max_age
+);
+
+select * from age_bins;
+
+select concat(min_age,' - ',max_age,' years') as Age,
+count(gold) AS gold,
+	count(silver) AS silver,
+	count(bronze) AS bronze,
+	count(gold) + count(silver) + count(bronze) AS total
+	FROM games g
+INNER JOIN athletes a ON g.athlete_id = a.id
+inner join age_bins on a.age >= min_age and a.age< max_age
+group by min_age,max_age
+order by min_age;
+
+
+--medals by BMI
+
+
+-- some weight observations are null we will impute them by average weight distributed by 5 year 
+--age bins and 10 cm height bins
+
+--create weight matrix
+drop table weight_matrix;
+create temp table weight_matrix as
+(
+select gender,min_age,max_age,min_height,max_height,round(avg(weight),2) avg_weight
+from athletes join age_bins
+on (athletes.age >= age_bins.min_age and athletes.age < max_age)
+join height_bins
+on(athletes.height>= height_bins.min_height and athletes.height < height_bins.max_height)
+group by gender,min_age,max_age,min_height,max_height
+order by min_age,max_age,min_height,max_height);
+select * from weight_matrix;
+
+--create table with imputed weight
+create table athletes_imputed as
+(
+select id,name,a.gender,age,height,round(coalesce(weight,avg_weight)) as weight
+from athletes a join weight_matrix b
+on a.gender = b.gender
+and age >= min_age and age < max_age
+and height >= min_height and height < max_height)
+
+SELECT avg(weight) AS avg_weight,
+	count(*) - count(weight) AS missing_value
+FROM athletes
+UNION
+SELECT avg(weight) AS avg_weight,
+	count(*) - count(weight) AS missing_value
+FROM athletes_imputed
+
+--quite effective
+
+--medals by BMI
+-- some weight observations are null we will impute them by average weight distributed by 5 year 
+--age bins and 10 cm height bins
+
+--create weight matrix
+drop table weight_matrix;
+create temp table weight_matrix as
+(
+select gender,min_age,max_age,min_height,max_height,round(avg(weight),2) avg_weight
+from athletes join age_bins
+on (athletes.age >= age_bins.min_age and athletes.age < max_age)
+join height_bins
+on(athletes.height>= height_bins.min_height and athletes.height < height_bins.max_height)
+group by gender,min_age,max_age,min_height,max_height
+order by min_age,max_age,min_height,max_height);
+select * from weight_matrix;
+select count(*) from athletes_imputed;
+--create table with imputed weight
+create table athletes_imputed as
+(
+select id,name,a.gender,age,height,round(coalesce(weight,avg_weight)) as weight
+from athletes a join weight_matrix b
+on a.gender = b.gender
+and age >= min_age and age < max_age
+and height >= min_height and height < max_height)
+
+SELECT avg(weight) AS avg_weight,
+	count(*) - count(weight) AS missing_value
+FROM athletes
+UNION
+SELECT avg(weight) AS avg_weight,
+	count(*) - count(weight) AS missing_value
+FROM athletes_imputed
+
+--quite effective
+drop table bmi;
+--calulate bmi
+CREATE TEMP TABLE bmi AS (
+	
+WITH cte AS
+	(SELECT id,
+			round(weight * 10000 / (height * height), 2)AS bmi
+		FROM athletes_imputed)
+
+SELECT id,
+	bmi,
+	CASE
+		WHEN bmi < 18.50 THEN 'Underweight'
+		WHEN bmi BETWEEN 18.50 AND 24.9 THEN 'Healthy'
+		ELSE 'Overweight'
+	END AS category
+FROM cte)
+select * from bmi;
+--count of athlete by bmi
+
+select category,count(id) 
+from bmi
+group by category
+
+--count of medals
+SELECT category,
+	count(gold) AS gold,
+	count(silver) AS silver,
+	count(bronze) AS bronze,
+	count(gold) + count(silver) + count(bronze) AS total
+FROM games g
+INNER JOIN bmi a ON g.athlete_id = a.id
+GROUP BY category
+
+--best performing athletes
+
+SELECT a.name,
+	a.gender,
+	initcap(substr(replace(c.name, '.', ''), position('-' in replace(c.name, '.', '')) + 2)) AS "Country",
+	count(gold) AS gold,
+	count(silver) AS silver,
+	count(bronze) AS bronze,
+	count(gold) + count(silver) + count(bronze) AS total
+FROM athletes a
+INNER JOIN games g ON a.id = g.athlete_id
+INNER JOIN country c ON g.country_id = c.id
+GROUP BY a.name,
+	a.gender,
+	c.name
+ORDER BY total DESC
+LIMIT 15;
+
+
+--athlete count by country top 15
+
+SELECT c.name as Country,
+	count(DISTINCT a.id) AS "Number of Athletes"
+FROM athletes a
+INNER JOIN games ON a.id = games.athlete_id
+INNER JOIN country c ON games.country_id = c.id
+GROUP BY c.name
+ORDER BY "Number of Athletes" DESC;
+
+--we need to fix the country and region formatting
+
+CREATE TABLE country_clean AS
+(SELECT id,
+		left(upper(trim(replace(name, '.', ''))), 3) AS country_code,
+		initcap(substr(trim(replace(name, '.', '')),
+		position('-' in trim(replace(name, '.', ''))) + 2)) AS name,
+		gdp,
+		pop_in_million,
+		initcap(coalesce(region, 'Other')) AS region
+ FROM country);
+
+----athlete count by country top 15 reformatted
+--athlete count by country top 15
+
+SELECT c.name AS country,
+	count(DISTINCT a.id) AS "Number of Athletes"
+FROM athletes a
+INNER JOIN games ON a.id = games.athlete_id
+INNER JOIN country_clean c ON games.country_id = c.id
+GROUP BY c.name
+ORDER BY "Number of Athletes" DESC
+LIMIT 15;
+
+--medals by country top 10
+
+SELECT c.name,
+	count(gold) AS gold,
+	count(silver) AS silver,
+	count(bronze) AS bronze,
+	count(gold) + count(silver) + count(bronze) AS total
+FROM country_clean c
+INNER JOIN games g ON c.id = g.country_id
+GROUP BY c.name
+ORDER BY total asc
+LIMIT 10;
+
+-- medals distribution by gdp and population
+
+--we will create bins using percentile function for gdp and population
+
+SELECT percentile_disc(0.20) within group (order by gdp) 
+, percentile_disc(0.40) within group (order by gdp) 
+, percentile_disc(0.60) within group (order by gdp) 
+, percentile_disc(0.80) within group (order by gdp) 
+, percentile_disc(1) within group (order by gdp) 
+FROM country_clean;
+
+--similarly for population
+
+
+--we will categorize into bins
+create temp table country_category as (
+SELECT id,
+	name,
+	CASE
+		WHEN gdp <= 2921136786 THEN 'Very Low Income'
+		WHEN gdp <= 12344677303 THEN 'Low Income'
+		WHEN gdp <= 45038518439 THEN 'Moderate Income'
+		WHEN gdp <= 256142857143 THEN 'High Income'
+		ELSE 'Very High Income'
+	END AS Income_Category,
+	CASE
+		WHEN pop_in_million <= 0.543935 THEN 'Very Low Population'
+		WHEN pop_in_million <= 4.284332 THEN 'Low Population'
+		WHEN pop_in_million <= 10.428074 THEN 'Moderate Population'
+		WHEN pop_in_million <= 30.309135 THEN 'High Population'
+		ELSE 'Very High Population'
+	END AS Population_Category
+FROM country_clean);
+
+--medal count by population
+
+SELECT population_category,
+	count(DISTINCT id) AS country_count,
+	count(gold) AS gold,
+	count(silver) AS silver,
+	count(bronze) AS bronze,
+	count(gold) + count(silver) + count(bronze) AS total
+FROM country_category c
+INNER JOIN games g ON c.id = g.country_id
+GROUP BY population_category
+ORDER BY total DESC;
+
+--medal count by gdp
+
+SELECT income_category,
+	count(DISTINCT id) AS country_count,
+	count(gold) AS gold,
+	count(silver) AS silver,
+	count(bronze) AS bronze,
+	count(gold) + count(silver) + count(bronze) AS total
+FROM country_category c
+INNER JOIN games g ON c.id = g.country_id
+GROUP BY income_category
+ORDER BY total DESC;
+
+
+--medal count by gdp per capita
+--calculating gdp per capita
+WITH cte AS
+	(SELECT id,
+			name,
+			gdp / (pop_in_million * 1000000.0) AS gdp_per_capita
+		FROM country_clean
+		WHERE pop_in_million <> 0 ),
+ --classified according to world bank data
+cte2 AS
+	(SELECT id,
+			name,
+			CASE
+				WHEN gdp_per_capita <= 1035 THEN 'low income'
+				WHEN gdp_per_capita BETWEEN 1036 AND 4085 THEN 'lower middle income'
+				WHEN gdp_per_capita BETWEEN 4086 AND 12615 THEN 'upper middle income'
+				ELSE 'high income'
+			END AS country_category
+		FROM cte)
+		
+SELECT country_category,
+	count(DISTINCT id) AS country_count,
+	count(gold) AS gold,
+	count(silver) AS silver,
+	count(bronze) AS bronze,
+	count(gold) + count(silver) + count(bronze) AS total
+FROM cte2
+INNER JOIN games ON cte2.id = games.country_id
+GROUP BY country_category;
+
+
+--total medals by income and population category
+
+SELECT income_category,
+	population_category,
+	count(gold) + count(silver) + count(bronze) AS total_medals
+FROM country_category c
+JOIN games g ON c.id = g.country_id
+GROUP BY 1,2
+ORDER BY 1,2;
+
+--games analysis
+
+-- time duration of games
+
+select type,max(date_part('year', year)) from games
+group by type;
+--sport by type
+
+SELECT distinct(TYPE),
+	sport
+FROM games
+ORDER BY TYPE;
+
+--number of events by type, country and athlete participation and total medal counts
+
+SELECT TYPE,
+	count(DISTINCT event) AS EVENTS,
+	count(DISTINCT country_id) AS countries_participated,
+	count(DISTINCT athlete_id) AS athletes_participated,
+	count(gold) + count(silver) + count(bronze) AS total_medals
+FROM games
+GROUP BY TYPE;
+
+--number of events by gender category
+
+with cte as (
+SELECT DISTINCT event,
+	CASE
+		WHEN lower(event) like '%women%' THEN 'Womens Events'
+		WHEN lower(event) like '%men%' THEN 'Mens Events'
+		ELSE 'Other'
+	END AS category
+FROM games )
+SELECT category,
+	count(event) AS COUNT
+FROM cte
+GROUP BY category
+
+--all event with winner names
+
+SELECT g.event,
+	max(CASE
+		WHEN gold = 1 THEN a.name
+		ELSE NULL
+		END) AS "Gold Medallist",
+	max(CASE
+		WHEN silver = 1 THEN a.name
+		ELSE NULL
+		END) "Silver Medallist",
+	max(CASE
+		WHEN bronze = 1 THEN a.name
+		ELSE NULL
+		END) "Bronze Medallist"
+FROM games g
+INNER JOIN athletes a ON g.athlete_id = a.id
+GROUP BY g.event
+ORDER BY g.event;
+
+--we can use string_agg to list all winners however for simplicity we're using max to output 1 player
+
